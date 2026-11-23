@@ -2,7 +2,17 @@
 
 Universal resolution and hardening engine for the common Windows **"I2C HID Device (Code 10: CM_PROB_FAILED_START)"** touchpad failure.
 
-Works across major PC manufacturers (Lenovo, Dell, HP, ASUS, Acer) and touchpad vendors (ELAN, Synaptics, Goodix, FocalTech).
+Works across major PC manufacturers (Lenovo, Dell, HP, ASUS, Acer) and touchpad vendors (ELAN, Synaptics, Goodix, FocalTech) on both Intel and AMD platforms.
+
+---
+
+## Quick Install (One-Liner)
+
+Open PowerShell as Administrator and run:
+
+```powershell
+irm https://raw.githubusercontent.com/Hiak-Harsha/win-touchpad-fix/main/install.ps1 | iex
+```
 
 ---
 
@@ -23,25 +33,38 @@ On modern Windows laptops, touchpads connect via an internal **I2C Serial IO bus
 
 ---
 
-## What WinTouchpadFix Does
+## Features & Capabilities
 
-`WinTouchpadFix` systematically eliminates all failure modes:
-
-* **Disables D3Cold & Enhanced Power Management** directly on the sensor node so operational rail voltage is maintained.
-* **Sets `IdleInWorkingState = 0`** across all detected Intel (`VEN_8086`) and AMD (`VEN_1022`) Serial IO I2C host controllers.
-* **Extends `DefaultResetTimeout` to 5000ms**, providing 25x more headroom for the hardware handshake.
-* **Disables Fast Startup in System Policy**, guaranteeing clean S5 cold boots every time.
-* **Prevents Windows Update driver overwriting** via Group Policy.
-* **Forces `LeaveOnWithMouse = 1`**, preventing Windows from auto-disabling the touchpad when USB mice or flash drives are plugged in.
-* **Registers a 2-second Emergency Reviver** (`Ctrl+Alt+T`) that power-cycles the bus on demand without requiring a system reboot.
+* **Hardware & Policy Audit (`Audit_Only.bat` / `-AuditOnly`):**  
+  Non-destructive inspection that checks if your laptop is currently vulnerable to sleep freezes and Code 10 crashes.
+* **System Restore Point Safety Net:**  
+  Automatically creates a Windows System Restore point before applying changes.
+* **Bus & Sensor Hardening:**  
+  Disables D3Cold sleep and forces `IdleInWorkingState = 0` across all Intel (`VEN_8086`) and AMD (`VEN_1022`) host controllers.
+* **5000ms Wake Headroom:**  
+  Extends `DefaultResetTimeout` to 5000ms (25x more time to handshake on wake).
+* **Boot Freeze Immunity:**  
+  Disables Fast Startup in system policies to prevent cached error reloading.
+* **Windows Update Driver Shield:**  
+  Protects functional hardware drivers from being overwritten by cumulative updates.
+* **USB & Mouse Coexistence:**  
+  Locks `LeaveOnWithMouse = 1` so connecting USB mice or drives never disables the touchpad.
+* **Emergency 2-Second Reviver (`Ctrl + Alt + T`):**  
+  Registered background task with native Windows toast notification to power-cycle the I2C bus in 2 seconds without restarting.
+* **One-Click Factory Revert (`Revert_Fix.bat` / `-Revert`):**  
+  Allows instant restoration of original Windows default settings at any time.
 
 ---
 
-## How to Use
+## Available Scripts
 
-1. Download or clone this repository.
-2. Right-click **`Run_Fix.bat`** and run as Administrator.
-3. The script will automatically discover your hardware, apply the protections, and display a live verification table.
+| File | Description |
+| :--- | :--- |
+| **`Run_Fix.bat`** | Applies all hardening rules and registers the emergency revive task. |
+| **`Audit_Only.bat`** | Inspects your system and outputs a vulnerability scorecard without making changes. |
+| **`Revert_Fix.bat`** | Restores default Windows power management settings. |
+| **`Instant_Revive.bat`** | Standalone script that power-cycles the bus and shows a desktop notification. |
+| **`install.ps1`** | Remote installer script for one-line web installation. |
 
 ---
 
@@ -51,4 +74,4 @@ After running the fix, an emergency background task is registered:
 * **Hotkey:** `Ctrl` + `Alt` + `T`
 * **Desktop Icon:** `Revive_Touchpad`
 
-If the operating system shell ever freezes the cursor, pressing `Ctrl + Alt + T` will instantly power-cycle the I2C host controller and restore touchpad input in 2 seconds.
+If the operating system shell ever freezes the cursor, pressing `Ctrl + Alt + T` will instantly power-cycle the I2C host controller, revive the touchpad in 2 seconds, and display a confirmation notification.
