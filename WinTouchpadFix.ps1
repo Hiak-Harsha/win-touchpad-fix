@@ -88,8 +88,10 @@ if ($Revert) {
     Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\DriverSearching' -Name 'SearchOrderConfig' -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
     Log-Message "  -> Windows Update driver settings reverted." "Green"
 
-    # 4. Remove emergency revive task
+    # 4. Remove emergency revive & watchdog tasks
     Unregister-ScheduledTask -TaskName 'WinTouchpadRevive' -Confirm:$false -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName 'WinTouchpadWatchdog' -Confirm:$false -ErrorAction SilentlyContinue
+    if (Test-Path "$dataDir\Watchdog.ps1") { Remove-Item "$dataDir\Watchdog.ps1" -Force -ErrorAction SilentlyContinue }
     if (Test-Path "$HOME\Desktop\Revive_Touchpad.lnk") { Remove-Item "$HOME\Desktop\Revive_Touchpad.lnk" -Force -ErrorAction SilentlyContinue }
     Log-Message "  -> Emergency shortcut and tasks removed." "Green"
 
@@ -163,6 +165,12 @@ if ($touchpadKeys.Count -gt 0) {
         $regPath = 'Registry::' + $k.Name
         Set-ItemProperty -Path $regPath -Name 'EnhancedPowerManagementEnabled' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
         Set-ItemProperty -Path $regPath -Name 'D3ColdSupported' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+        if ($k.Name -match '\\Device Parameters$') {
+            $wdfPath = "$regPath\WDF"
+            if (-not (Test-Path $wdfPath)) { New-Item -Path $wdfPath -Force -ErrorAction SilentlyContinue | Out-Null }
+            Set-ItemProperty -Path $wdfPath -Name 'IdleInWorkingState' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path $wdfPath -Name 'WdfDirectedPowerTransitionEnable' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+        }
     }
     Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Enum\ACPI' -Recurse -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -match 'ELAN|SYNA|GDX' -and $_.Name -match 'e5b3b5ac-9725-4f78-963f-03dfb1d828c7' } |
@@ -179,14 +187,26 @@ if ($touchpadKeys.Count -gt 0) {
 # =========================================================================
 Log-Message "`n[2/7] Hardening Host Controller Bus Power States (Intel & AMD)..." "Yellow"
 
-$controllerKeys = Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Enum\PCI' -Recurse -ErrorAction SilentlyContinue |
-    Where-Object { ($_.Name -match 'VEN_8086&DEV_51' -or $_.Name -match 'VEN_8086&DEV_A0' -or $_.Name -match 'VEN_8086&DEV_02' -or $_.Name -match 'VEN_1022') -and $_.Name -like '*\WDF' }
+$controllerKeys = @(
+    Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Enum\PCI' -Recurse -ErrorAction SilentlyContinue |
+        Where-Object { ($_.Name -match 'VEN_8086&DEV_51' -or $_.Name -match 'VEN_8086&DEV_A0' -or $_.Name -match 'VEN_8086&DEV_02' -or $_.Name -match 'VEN_1022') -and $_.Name -like '*\WDF' }
+    Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Enum\ACPI' -Recurse -ErrorAction SilentlyContinue |
+        Where-Object { ($_.Name -match 'INTC10' -or $_.Name -match 'AMDI003') -and $_.Name -like '*\WDF' }
+)
 
 $patchedControllers = 0
 foreach ($ck in $controllerKeys) {
     $regPath = 'Registry::' + $ck.Name
     Set-ItemProperty -Path $regPath -Name 'IdleInWorkingState' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
     Set-ItemProperty -Path $regPath -Name 'WdfDirectedPowerTransitionEnable' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+    $devParamsPath = Split-Path -Path $regPath -Parent
+    Set-ItemProperty -Path $devParamsPath -Name 'D3ColdSupported' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+    Set-ItemProperty -Path $devParamsPath -Name 'EnhancedPowerManagementEnabled' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+    $d3Key = "$devParamsPath\e5b3b5ac-9725-4f78-963f-03dfb1d828c7"
+    if (Test-Path $d3Key) {
+        Set-ItemProperty -Path $d3Key -Name 'D3ColdSupported' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+        Set-ItemProperty -Path $d3Key -Name 'EnhancedPowerManagementEnabled' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+    }
     $patchedControllers++
 }
 Log-Message "      -> Success: Disabled idle bus-sleep across $patchedControllers host controllers." "Green"
@@ -236,13 +256,13 @@ foreach ($p in @($ptpUser, $ptpStatus, $ptpLM, $ptpPol)) {
 Log-Message "      -> Success: Touchpad will NEVER auto-disable when USB mice or drives are inserted." "Green"
 
 # =========================================================================
-# STEP 7: PCIe Link State Power Management (ASPM Latency Reduction)
+# STEP 7: PCIe Link State Power Management (ASPM Off for Zero Wake Latency)
 # =========================================================================
-Log-Message "`n[7/7] Adjusting PCIe Link State Power Management (ASPM)..." "Yellow"
-powercfg /setacvalueindex SCHEME_CURRENT SUB_PCIEXPRESS ASPM 1 2>$null
-powercfg /setdcvalueindex SCHEME_CURRENT SUB_PCIEXPRESS ASPM 1 2>$null
+Log-Message "`n[7/7] Disabling PCIe Link State Power Management (ASPM)..." "Yellow"
+powercfg /setacvalueindex SCHEME_CURRENT SUB_PCIEXPRESS ASPM 0 2>$null
+powercfg /setdcvalueindex SCHEME_CURRENT SUB_PCIEXPRESS ASPM 0 2>$null
 powercfg /setactive SCHEME_CURRENT 2>$null
-Log-Message "      -> Success: PCIe ASPM set to Moderate across AC and Battery." "Green"
+Log-Message "      -> Success: PCIe ASPM set to Off across AC and Battery." "Green"
 
 # =========================================================================
 # Install Protected Emergency Revive Engine with Native Notification
@@ -251,12 +271,7 @@ Log-Message "`n[*] Installing Protected Emergency Revive Engine & Global Hotkey 
 
 $reviveBat = @"
 @echo off
-pnputil /restart-device "PCI\VEN_8086*" >nul 2>&1
-pnputil /restart-device "PCI\VEN_1022*" >nul 2>&1
-pnputil /restart-device "ACPI\ELAN*" >nul 2>&1
-pnputil /restart-device "ACPI\SYNA*" >nul 2>&1
-pnputil /restart-device "ACPI\COMP0001*" >nul 2>&1
-pnputil /scan-devices >nul 2>&1
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-PnpDevice | Where-Object { `$_.FriendlyName -match 'I2C Host Controller' -or `$_.Service -match '^iaLPSS2_I2C|^amd_i2c' } | ForEach-Object { pnputil /restart-device `$_.InstanceId | Out-Null }; Get-PnpDevice | Where-Object { `$_.InstanceId -match '^ACPI\\(ELAN|SYNA|SYN|GDX|GXTP|FTE|MSFT0001|COMP0001|PNP0C50)' -or `$_.Service -eq 'hidi2c' } | ForEach-Object { pnputil /restart-device `$_.InstanceId | Out-Null }; pnputil /scan-devices | Out-Null"
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\PrecisionTouchPad\Status" /v Enabled /t REG_DWORD /d 1 /f >nul 2>&1
 powershell -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms; `$n = New-Object System.Windows.Forms.NotifyIcon; `$n.Icon = [System.Drawing.SystemIcons]::Information; `$n.Visible = `$true; `$n.ShowBalloonTip(2000, 'WinTouchpadFix', 'Touchpad I2C bus successfully revived!', [System.Windows.Forms.ToolTipIcon]::Info); Start-Sleep -Seconds 1; `$n.Dispose()" >nul 2>&1
 exit /b
@@ -282,12 +297,87 @@ $sc.Save()
 Log-Message "      -> Success: Emergency task registered! Hotkey Ctrl+Alt+T active with toast alerts." "Green"
 
 # =========================================================================
+# Install Silent Event-Driven Self-Healing Watchdog (SYSTEM)
+# =========================================================================
+Log-Message "`n[*] Installing Silent Self-Healing Watchdog (Wake / Code 10 Auto-Recovery)..." "Cyan"
+
+$watchdogPs1 = @'
+$ErrorActionPreference = 'SilentlyContinue'
+$tps = Get-PnpDevice | Where-Object {
+    $_.InstanceId -match '^ACPI\\(ELAN|SYNA|SYN|GDX|GXTP|FTE|MSFT0001|COMP0001|PNP0C50)' -or $_.Service -eq 'hidi2c'
+}
+if ($tps -and ($tps | Where-Object { $_.Status -ne 'OK' })) {
+    $log = 'C:\ProgramData\WinTouchpadFix\WinTouchpadFix.log'
+    "[$((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))] [Watchdog] Touchpad not OK -> auto-reviving I2C bus..." | Out-File $log -Append -Encoding utf8
+    Get-PnpDevice | Where-Object { $_.FriendlyName -match 'I2C Host Controller' -or $_.Service -match '^iaLPSS2_I2C|^amd_i2c' } |
+        ForEach-Object { pnputil /restart-device $_.InstanceId | Out-Null }
+    $tps | ForEach-Object { pnputil /restart-device $_.InstanceId | Out-Null }
+    pnputil /scan-devices | Out-Null
+}
+'@
+Set-Content -Path "$dataDir\Watchdog.ps1" -Value $watchdogPs1 -Force
+
+$watchdogXml = @"
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.3" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers>
+    <LogonTrigger><Enabled>true</Enabled></LogonTrigger>
+    <EventTrigger>
+      <Enabled>true</Enabled>
+      <Subscription>&lt;QueryList&gt;&lt;Query Id="0" Path="System"&gt;&lt;Select Path="System"&gt;*[System[Provider[@Name='Microsoft-Windows-Kernel-Power'] and (EventID=507 or EventID=107)]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
+    </EventTrigger>
+    <EventTrigger>
+      <Enabled>true</Enabled>
+      <Subscription>&lt;QueryList&gt;&lt;Query Id="0" Path="System"&gt;&lt;Select Path="System"&gt;*[System[Provider[@Name='Microsoft-Windows-Power-Troubleshooter'] and EventID=1]]&lt;/Select&gt;&lt;/QueryList&gt;</Subscription>
+    </EventTrigger>
+    <EventTrigger>
+      <Enabled>true</Enabled>
+      <Subscription>&lt;QueryList&gt;&lt;Query Id="0" Path="Microsoft-Windows-Kernel-PnP/Configuration"&gt;&lt;Select Path="Microsoft-Windows-Kernel-PnP/Configuration"&gt;*[System[EventID=411]]&lt;/Select&gt;&lt;/QueryList&gt;</Subscription>
+    </EventTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>S-1-5-18</UserId>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>true</Hidden>
+    <ExecutionTimeLimit>PT2M</ExecutionTimeLimit>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>powershell.exe</Command>
+      <Arguments>-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "$dataDir\Watchdog.ps1"</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"@
+Register-ScheduledTask -TaskName 'WinTouchpadWatchdog' -Xml $watchdogXml -Force | Out-Null
+Log-Message "      -> Success: Silent Watchdog active (auto-heals on Modern Standby wake & Code 10)." "Green"
+
+# =========================================================================
 # LIVE STATUS AUDIT & RE-CYCLE
 # =========================================================================
 Log-Message "`n==========================================================================" "Cyan"
 Log-Message "                      LIVE DEVICE HEALTH AUDIT                            " "Cyan"
 Log-Message "==========================================================================" "Cyan"
 
+# Clean up phantom/stale Unknown HID touchpad nodes from past crashes
+Get-PnpDevice | Where-Object { $_.Status -eq 'Unknown' -and $_.InstanceId -match '^HID\\(ELAN|SYNA|SYN|GDX|GXTP|FTE|MSFT0001|COMP0001|PNP0C50)' } | ForEach-Object {
+    pnputil /remove-device $_.InstanceId >$null 2>&1
+}
+
+Get-PnpDevice | Where-Object { $_.FriendlyName -match 'I2C Host Controller' -or $_.Service -match '^iaLPSS2_I2C|^amd_i2c' } | ForEach-Object { pnputil /restart-device $_.InstanceId >$null 2>&1 }
+Get-PnpDevice | Where-Object { $_.InstanceId -match '^ACPI\\(ELAN|SYNA|SYN|GDX|GXTP|FTE|MSFT0001|COMP0001|PNP0C50)' -or $_.Service -eq 'hidi2c' } | ForEach-Object { pnputil /restart-device $_.InstanceId >$null 2>&1 }
 pnputil /scan-devices >$null 2>&1
 
 $touchpads = Get-PnpDevice | Where-Object { $_.FriendlyName -match 'Touchpad|Trackpad|I2C HID' -or $_.InstanceId -match 'ELAN|SYNA|COMP0001' }
