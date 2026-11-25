@@ -317,52 +317,30 @@ if ($tps -and ($tps | Where-Object { $_.Status -ne 'OK' })) {
 '@
 Set-Content -Path "$dataDir\Watchdog.ps1" -Value $watchdogPs1 -Force
 
-$watchdogXml = @"
-<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.3" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <Triggers>
-    <LogonTrigger><Enabled>true</Enabled></LogonTrigger>
-    <EventTrigger>
-      <Enabled>true</Enabled>
-      <Subscription>&lt;QueryList&gt;&lt;Query Id="0" Path="System"&gt;&lt;Select Path="System"&gt;*[System[Provider[@Name='Microsoft-Windows-Kernel-Power'] and (EventID=507 or EventID=107)]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
-    </EventTrigger>
-    <EventTrigger>
-      <Enabled>true</Enabled>
-      <Subscription>&lt;QueryList&gt;&lt;Query Id="0" Path="System"&gt;&lt;Select Path="System"&gt;*[System[Provider[@Name='Microsoft-Windows-Power-Troubleshooter'] and EventID=1]]&lt;/Select&gt;&lt;/QueryList&gt;</Subscription>
-    </EventTrigger>
-    <EventTrigger>
-      <Enabled>true</Enabled>
-      <Subscription>&lt;QueryList&gt;&lt;Query Id="0" Path="Microsoft-Windows-Kernel-PnP/Configuration"&gt;&lt;Select Path="Microsoft-Windows-Kernel-PnP/Configuration"&gt;*[System[EventID=411]]&lt;/Select&gt;&lt;/QueryList&gt;</Subscription>
-    </EventTrigger>
-  </Triggers>
-  <Principals>
-    <Principal id="Author">
-      <UserId>S-1-5-18</UserId>
-      <RunLevel>HighestAvailable</RunLevel>
-    </Principal>
-  </Principals>
-  <Settings>
-    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
-    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
-    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
-    <AllowHardTerminate>true</AllowHardTerminate>
-    <StartWhenAvailable>true</StartWhenAvailable>
-    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
-    <AllowStartOnDemand>true</AllowStartOnDemand>
-    <Enabled>true</Enabled>
-    <Hidden>true</Hidden>
-    <ExecutionTimeLimit>PT2M</ExecutionTimeLimit>
-  </Settings>
-  <Actions Context="Author">
-    <Exec>
-      <Command>powershell.exe</Command>
-      <Arguments>-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "$dataDir\Watchdog.ps1"</Arguments>
-    </Exec>
-  </Actions>
-</Task>
-"@
-Register-ScheduledTask -TaskName 'WinTouchpadWatchdog' -Xml $watchdogXml -Force | Out-Null
-Log-Message "      -> Success: Silent Watchdog active (auto-heals on Modern Standby wake & Code 10)." "Green"
+try {
+    $wdAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$dataDir\Watchdog.ps1`""
+    $wdSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 2) -MultipleInstances IgnoreNew
+    $wdPrincipal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+
+    $evtClass = Get-CimClass -ClassName MSFT_TaskEventTrigger -Namespace Root/Microsoft/Windows/TaskScheduler
+    $tPower = New-CimInstance -CimClass $evtClass -ClientOnly
+    $tPower.Enabled = $true
+    $tPower.Subscription = '<QueryList><Query Id="0" Path="System"><Select Path="System">*[System[Provider[@Name=''Microsoft-Windows-Kernel-Power''] and (EventID=507 or EventID=107)]]</Select></Query></QueryList>'
+
+    $tWake = New-CimInstance -CimClass $evtClass -ClientOnly
+    $tWake.Enabled = $true
+    $tWake.Subscription = '<QueryList><Query Id="0" Path="System"><Select Path="System">*[System[Provider[@Name=''Microsoft-Windows-Power-Troubleshooter''] and EventID=1]]</Select></Query></QueryList>'
+
+    $tPnp = New-CimInstance -CimClass $evtClass -ClientOnly
+    $tPnp.Enabled = $true
+    $tPnp.Subscription = '<QueryList><Query Id="0" Path="Microsoft-Windows-Kernel-PnP/Configuration"><Select Path="Microsoft-Windows-Kernel-PnP/Configuration">*[System[EventID=411]]</Select></Query></QueryList>'
+
+    $tLogon = New-ScheduledTaskTrigger -AtLogOn
+    Register-ScheduledTask -TaskName 'WinTouchpadWatchdog' -Action $wdAction -Trigger @($tLogon, $tPower, $tWake, $tPnp) -Settings $wdSettings -Principal $wdPrincipal -Force -ErrorAction Stop | Out-Null
+    Log-Message "      -> Success: Silent Watchdog active (auto-heals on Modern Standby wake & Code 10)." "Green"
+} catch {
+    Log-Message "      -> Warning: Watchdog task registration failed: $($_.Exception.Message)" "Yellow"
+}
 
 # =========================================================================
 # LIVE STATUS AUDIT & RE-CYCLE
